@@ -1,0 +1,536 @@
+---
+title: "Regression modelling on Cancer diagnosis"
+author: "IonasKel"
+date: 'Created: May 7, 2018'
+output:
+  html_document:
+    code_folding: hide
+    fig_height: 8
+    fig_width: 12
+    highlight: tango
+    toc: yes
+---
+
+```{r setup, include = FALSE , echo = FALSE}
+knitr::opts_chunk$set(error = FALSE , warning = FALSE , message = FALSE)
+```
+
+
+
+## A. Introduction
+
+My purpose is to examine if we can predict the death ratio caused by cancer. US federal government has published open data fitting our present needs. These can be found at [cancer.gov](https://www.cancer.gov/) for cancer and mortality data. 
+
+Our **goal** is to demonstrate wether or not the death rate is correlated to social and economical status of a person.
+
+
+## B. Reshape datasets
+
+### 1) Libraries
+
+Libraries we are going to use.
+
+```{r}
+library(tidyverse)
+library(ggthemes)
+library(corrplot)
+library(GGally)
+library(caret)
+library(devtools)
+library(data.world)
+library(DT)
+library(lubridate)
+library(factoextra)
+options(knitr.table.format = "html")
+```
+
+
+### 2) Import data
+
+These data are available on the [data.world](https://data.world/nrippner/cancer-analysis-hackathon-challenge) website. With data.world package we can retrieve the data directly from the website.
+
+```{r}
+# retrive our data
+
+# Data about mortality
+death_data = read_csv("D:/Desktop HDD/Datasets/death.csv")
+
+# Data about incidents
+incd_data = read_csv("D:/Desktop HDD/Datasets/incd.csv")
+
+```
+
+
+### 3) Create some useful functions for later
+
+```{r , echo = TRUE}
+
+# Barplot for Missing Values of a dataset
+column_nas = function(dataframe) {
+        
+        na_vals = sapply(dataframe , function(x) mean(is.na(x)))
+        
+        nas = data.frame(column_names = names(na_vals) , na_percentage = as.vector(na_vals))
+        
+        ggplot(nas , aes(x = column_names , y = na_percentage , label = paste(as.character(round(na_percentage * 100 , 1)) , "%"))) +
+                geom_col(fill = "lightblue") + xlab('Names of columns') + ylab("NA's Percentage") +
+                labs(title = "Column NA's Percentage") + geom_text(color = 'darkblue') + theme_igray() + coord_flip()
+}
+
+# Plot for every variable. Barplot for categorical and density histogram for numerical.
+plot.var = function(var) {
+        
+        if(class(var) == 'numeric' | class(var) == 'integer') {
+                
+                ggplot(data.frame(var) , aes(var)) + geom_density(color = 'blue' , size = 1 , na.rm = T) + 
+                        theme_bw() + theme(axis.text.x = element_text(size = 15)) + 
+                        geom_vline(xintercept = mean(var))
+                
+        } else if(class(var) == 'factor') {
+                
+                ggplot(data.frame(var) , aes(x = var , y = ..count..)) + 
+                        geom_bar(fill = 'blue' , width = 0.5) + coord_flip()
+                
+        } else {
+                print('Variable NOT numeric or integer or factor')
+        }
+        
+}
+
+```
+
+
+### 4) Dealing with Missing Values in both datasets
+
+
+For **death_data** dataset
+```{r}
+column_nas(death_data)
+```
+
+
+
+For **incd_data** dataset
+```{r}
+column_nas(incd_data)
+```
+
+
+
+**10.7%** of the *age_adjusted_death_rate* are missing and we have to remove them. We will create a vector (removed_counties) with these county names in order to remove them from any other dataset.
+
+```{r}
+removed_counties = death_data[is.na(death_data$age_adjusted_death_rate_deaths_per_100_000) , "county"]
+
+death_data = death_data[-which(death_data[[1]] %in% removed_counties[[1]]) , ]
+
+paste0(dim(removed_counties)[1] , " counties removed from death_data")
+```
+
+
+### 5) Clean and Prepare data
+
+* **Death data**
+
+```{r}
+colnames(death_data)
+```
+
+From **death_data** dataset we 'll need only the *county* , *fips* , *age_adjusted_death_rate_deaths_per_100_000* and *average_annual_count* columns. We are not intrested in upper or lower confidence intervals or trends.
+
+```{r}
+death_data = death_data[ , c(1 , 2 , 4 , 7)]
+```
+
+
+* **Incident Data**
+
+```{r}
+colnames(incd_data)
+```
+
+From **incd_data** dataset we 'll need only *county* , *fips* , *age_adjusted_incidence_rate_cases_per_100_000* and *average_annual_count* columns.
+
+```{r}
+incd_data = incd_data[ , c(1 , 2 , 4 , 7)]
+```
+
+
+
+```{r}
+# Changing variable names for convenience
+colnames(death_data)[3:4] = c("death_rate" , "ann_avg_deaths")
+colnames(incd_data)[3:4] = c("incidence_rate" , "ann_avg_incidence")
+
+```
+
+New variable names are: county , fips , death_rate , ann_avg_deaths , incidence_rate and ann_avg_incidence
+
+### 6) Merge the two datasets
+
+At this point, we need to merge the two datasets by county and this will be done with fips variable that indicates each county code. The new dataset (total_set) look like this:
+
+```{r}
+# Merge the two datasets by 'fips'
+total_set = merge(x = death_data , y = incd_data , by = 'fips' , all.x = TRUE)
+
+
+# Remove 'county.y' variable & rename county.x to county
+total_set = total_set[ , -5]
+colnames(total_set)[2] = "county"
+
+
+# Change incidence_rate and ann_avg_incidence to numeric
+total_set$incidence_rate = as.numeric(total_set$incidence_rate)
+total_set$ann_avg_incidence = as.numeric(total_set$ann_avg_incidence)
+
+datatable(total_set , options = list(pageLength = 5))
+```
+
+
+
+
+### 7) Quick analysis
+
+Summary Statistics for death and incidence rate.
+
+* Death Rate
+```{r}
+summary(total_set$death_rate)
+```
+
+* Incidence Rate
+```{r}
+summary(total_set$incidence_rate)
+```
+
+As exprected the incidence rate is bigger especially for higher rates. There are also 247 missing values in the incidence rate column. We 'll figure later what we 're going to do with them. 
+
+Density Plots for the two rates. We 'll need to reshape our dataset in order to have the two density plots in the same graph. Function *gather* of the tidyr package can be used.
+
+```{r}
+# Gather data to a new dataset
+gathered_set = gather(total_set , 'Death.or.Incidence' , 'Rate' , c(3 , 5))
+
+# Fix levels on Death.or.Incidence column
+gathered_set$Death.or.Incidence = ifelse(gathered_set$Death.or.Incidence == 'death_rate' , 'Death Rate' , 'Incidence Rate')
+
+# Density Plot for the two rates
+ggplot(gathered_set[complete.cases(gathered_set) , ] , aes(Rate , fill = Death.or.Incidence)) + geom_density(alpha = 0.5) +
+        xlim(c(0 , 150)) + theme_economist()
+
+rm(gathered_set)
+
+```
+
+
+## C. Find Predictors
+
+### 1) What we 're looking for
+
+We 'll need social, economical data and anything may be correlated to Lung and Bronchus cancer(incidence or death). In order to join our findings with the current dataset, we 'll have to look for data indexed by US County.
+
+For example our variables may be
+
+* Poverty level
+* Income 
+* Education
+* Population data
+
+### 2) Loading Data
+
+These variables can be found in the [census.gov website](https://www.census.gov/) but there is a [package on github](https://github.com/Deleetdk/USA.county.data) that contains a large dataset with data for counties in the United States.
+
+Install it from github:
+```{r}
+usa_data = read_csv("D:/Desktop HDD/Datasets/usa_data.csv")
+```
+
+### 3) Variables and their missing Values{.tabset .tabset-fade .tabset-pills}
+
+Let's take a look at the new dataset. There are 3148 observations and 161 variables.
+
+```{r}
+# Cut the 161 variables to 4 pieces of 40 , 40 , 40 and 41. 
+a = list(1:40 , 41:80 , 81:120 , 121:161)
+```
+
+####1st Page
+```{r page1}
+str(usa_data[ , a[[1]]])
+column_nas(usa_data[ , a[[1]]])
+```
+
+####2nd Page
+```{r page2}
+str(usa_data[ , a[[2]]])
+column_nas(usa_data[ , a[[2]]])
+```
+
+####3rd Page
+```{r page3}
+str(usa_data[ , a[[3]]])
+column_nas(usa_data[ , a[[3]]])
+```
+
+####4th Page
+```{r page4}
+str(usa_data[ , a[[4]]])
+column_nas(usa_data[ , a[[4]]])
+rm(a)
+```
+
+
+
+
+### 4) Choosing the best predictors
+
+
+We need to decide what variables are probably correlated with death and incidence rate.
+
+#### County codes
+* fips
+
+#### Education
+* Less.Than.High.School 
+* At.Least.High.School.Diploma
+* At.Least.Bachelor.Degree 
+* Graduate.Degree
+
+#### Income and Labor
+* Median.Earnings.2010.dollars
+* Unemployment
+* Uninsured
+
+#### Population
+* Total.Population
+* White 
+* Black
+* Hispanic
+* Asian
+* Amerindian
+
+#### Poverty
+* Children.Under.6.Living.in.Poverty
+* Adults.65.and.Older.Living.in.Poverty
+* Poverty.Rate.below.federal.poverty.threshold
+* Child.Poverty.living.in.families.below.the.poverty.line
+
+#### Health
+* Adult.obesity
+* Diabetes
+* Sexually.transmitted.infections
+
+
+
+```{r}
+# New dataset with these variables
+new = usa_data[ , c(2,73:76,78,120,121,87,99:103,85,86,89,91,116:118)]
+datatable(new)
+```
+
+
+
+### 5) Dealing with missing values
+
+```{r}
+column_nas(new)
+```
+
+```{r}
+# Remove Sexually transmitted infections column
+new = new[ , -(21)]
+
+# Remove rows with missing values
+missing_values_rows = complete.cases(new)
+
+# New dataset 
+new = new[missing_values_rows , ]
+rm(missing_values_rows)
+
+cat("New dimensions after removing NA's" , "\nRows:" , dim(new)[1] , "\nColumns:" , dim(new)[2])
+```
+
+
+### 6) Insights about predictors and transforming
+
+#### Education Variables
+
+```{r}
+ggpairs(new[ , c(2 , 3 , 4 , 5)] , aes(alpha = 0.2 , color = 'darkblue')) + theme_bw()
+```
+
+We observe that **Less.Than.High.School with At.Least.High.School.Diploma** and **At.Least.Bachelor.s.Degree with Graduate.Degree** variables are highly correlated as expected so there is no need to keep all of them. For that reason we 'll remove *Less than high school and graduate degree* columns.
+
+```{r}
+# Remove variables
+new = select(new , -Less.Than.High.School , -Graduate.Degree)
+```
+
+
+#### Population Variables
+
+```{r}
+ggpairs(new[ , 8:12] , aes(alpha = 0.2 , color = 'darkblue'))
+```
+
+
+#### Poverty
+
+```{r}
+ggpairs(new[ , 13:16] , aes(alpha = 0.2 , color = 'darkblue'))
+```
+
+Incident and death rates that we use are age adjusted and given a high correlation between **Poverty.Rate.below.federal.poverty.threshold and Child.Poverty.living.in.families.below.the.poverty.line** we 'll only keep the *Poverty.Rate.below.federal.poverty.threshold* column which seems to be representative for poverty rates.
+
+```{r}
+# Remove variables
+new = new[ , -c(13 , 14 , 16)]
+```
+
+#### Health
+
+Given a high correlation between obesity and diabetes (cor = `r round(cor(new$Adult.obesity , new$Diabetes) , 3)`) we will remove Diabetes variable because it is more specific and obesity represents a bigger sample of the population.
+
+```{r}
+new = new[ , -15]
+```
+
+
+
+### 7) Merge the datasets
+
+```{r}
+# Merge datasets
+final_set = merge(x = total_set , y = new , by = 'fips' , all.x = TRUE)
+
+# Remove first row which is for United States as a whole data and Incidence Rate columns
+final_set = final_set[-1 , -c(4:6)]
+
+# Remove rows with missing values
+final_set = final_set[complete.cases(final_set) , ]
+
+datatable(final_set , options = list(pageLength = 5))
+```
+
+
+
+## D. Full Analysis
+
+### 1) Correlation of the variables with Death Rate
+
+```{r}
+cors = cor(final_set[ , -c(1,2)])[-1 , 'death_rate']
+
+cors = data.frame(names = names(cors) , cors = cors)
+cors$names = as.character(cors$names)
+cors$col = ifelse(cors$cors > 0 , 'Pos cor' , 'Neg cor')
+
+ggplot(cors , aes(x = reorder(names , cors) , y = cors , fill = col)) + geom_col() +
+        coord_flip() + lims(y = c(-1 , 1)) +
+        labs(x = 'Variables Names' , y = 'Correlations' , title = 'Correlations with Death Rate Variable') + 
+        theme(legend.position = 'none')
+
+rm(cors)
+```
+
+### 2) Correlation plot of the final set
+
+```{r}
+corrplot(cor(final_set[ , -c(1:2)]) , type = 'lower' , method = 'number' , cl.srt = 90)
+```
+
+### 3) PCA - Biplot
+
+```{r}
+res.pca <- prcomp(final_set[ , -c(1:2)], scale = TRUE)
+
+fviz_pca_biplot(res.pca, col="darkred", col.ind = final_set$death_rate ,
+                geom = "point", repel=TRUE , legent.title = 'death_rate') +
+        ylim(c(-7 , 2.5)) + scale_color_gradient2(low = 'white' , high = 'darkgreen')
+
+rm(res.pca)
+```
+
+
+### 4) Regression Model
+
+We 'll create a multiple linear regression with our dependent variable be *death_rate*
+
+```{r}
+# Regression model
+model = lm(death_rate ~ . -fips -county , data = final_set)
+
+# Summary of the model
+summary(model)
+```
+
+
+Our model expains 50.65 % of the total variance with a standard error of *9.863*.
+
+According to our model:
+
+* As the number of people with at least High School Diploma increases by 10% death rate is decreased by 0.057
+* As the unemployment of a county increases by 1% death rate is increased by 0.4 
+* As the percentage of obese people increases by 5% death rate is increased by 3.96
+
+Unexplained results of our model:
+
+* The higher the median income, the higher the death rate when the correlation of these variables is -0.26
+
+### 5) Variables Importance
+
+Let's see the importance of our independent variables. 
+
+```{r}
+imp = varImp(model)
+imp = data.frame(names = row.names.data.frame(imp) , overall = imp$Overall)
+
+ggplot(imp , aes(x = reorder(names , overall) , y = overall , label = round(overall , 1))) + 
+        geom_point(fill = 'black' , size = 8) + coord_flip() +
+        geom_text(color = 'white' , size = 3) + 
+        labs(x = 'Variables' , y = 'Importance')
+
+rm(imp)
+```
+
+
+### 6) Bias of the estimator
+
+```{r}
+norm = data.frame(value = rnorm(100000 , mean = 0 , sd = sd(model$residuals)) , norm.res = 'Normal dist.')
+resids = data.frame(value = model$residuals , norm.res = 'Residuals')
+
+a = bind_rows(norm , resids)
+
+ggplot(a , aes(x = value , fill = norm.res)) + geom_density(alpha = 0.6) + 
+        labs(title = 'Residuals density plot vs Normal distribution' , subtitle = 'Residual standard error: 9.863' )
+
+rm(a , norm , resids , resids)
+```
+
+
+### 7) Actual and Fitted values
+
+```{r}
+ggplot(data.frame(actual = final_set$death_rate , fitted = model$fitted.values) , aes(x=actual , y=fitted)) + 
+        geom_jitter(color = 'darkblue' , alpha = 0.3) + labs(x='Actual Values', y='Fitted Values') +
+        geom_smooth(method = 'lm' , se = FALSE , color = 'black' , size = 0.5) + 
+        annotate('text' , x = 90 , y = 25 , label = 'Correlation: 0.71') + 
+        geom_abline(slope = 1 , linetype = 'dotted' , color = 'darkblue' , size = 0.5)
+```
+
+
+### 8) Residuals and Actual values
+
+```{r}
+ggplot(data.frame(actual = final_set$death_rate , res = model$residuals) , aes(x = actual , y = res)) + 
+        geom_jitter(color = 'darkred' , alpha = 0.3) + labs(x='Actual Values', y='Residuals') + 
+        geom_hline(yintercept = 0 , linetype = 'dotted' , size = 1)
+```
+
+
+## E. Improvements 
+
+Improvements to the model should focus on accounting for outliers and adding additional variables to the model.
+
