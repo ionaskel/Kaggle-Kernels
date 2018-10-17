@@ -1,0 +1,230 @@
+---
+title: "JUST GET THE REBOUND"
+author: "IonasKel"
+date: "December 4, 2017"
+output:
+  word_document:
+    toc: yes
+  html_document:
+    fig_height: 6
+    fig_width: 9
+    highlight: tango
+    number_sections: yes
+    toc: yes
+---
+
+
+```{r setup, include=FALSE , echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE , error = FALSE , warning = FALSE)
+```
+
+# Introduction 
+
+This an Exploratory data analysis for the [Kobe Bryant Shot Selection](https://www.kaggle.com/c/kobe-bryant-shot-selection/overview) Kaggle competition. In his 20-year career he made some big time shots but there were games he made really bad shot decisions.
+
+
+# Load Libraries
+
+We load a range of libraries for general data wrangling and general visualisation
+
+```{r , message = FALSE , warning = FALSE}
+library(plyr)
+library(dplyr)
+library(stringr)
+library(lubridate)
+library(gridExtra)
+library(tidyr)
+library(ggplot2)
+```
+
+
+# Load Kobe Bryant's dataset
+
+```{r}
+kobe = read.csv('data.csv' , stringsAsFactors = TRUE)
+```
+
+# Checking the dataset
+
+We have quite a few variables in this data set.
+
+```{r}
+names(kobe)
+```
+
+Let's look for missing values.
+
+```{r}
+sort(sapply(kobe , function(x) sum(is.na(x))) , decreasing = TRUE)
+```
+
+As we expected, we have 5000 missing values in shot made flag variable. These 5000 observation will be our test dataframe.
+
+
+# Data engineering
+
+```{r}
+test = kobe[is.na(kobe$shot_made_flag) , ]
+train = kobe[!is.na(kobe$shot_made_flag) , ]
+```
+```{r}
+train = tbl_df(train)
+train$shot_made_flag = as.factor(train$shot_made_flag)
+```
+
+```{r}
+levels(train$shot_type)
+```
+
+Let's remove the "Field Goal" part.
+
+```{r}
+train$shot_type = gsub(' Field Goal' , '' , train$shot_type)
+train$shot_type = as.factor(train$shot_type)
+levels(train$shot_type)
+```
+
+# Exploratory Graphs
+
+Let's explore Kobe's shot selection tendencies throught the years
+
+```{r}
+temp1 = train %>% filter(combined_shot_type == 'Jump Shot') %>% 
+        group_by(season , shot_type) %>% 
+        summarize(count = n()) %>%
+        mutate(perc =round(count / sum(count) , 2))
+
+p1 = ggplot(temp1 , aes(season , count , fill = shot_type , label = perc)) + 
+        geom_bar(stat="identity") + 
+        labs(x = 'SEASON' , y = 'TOTAL JUMPSHOTS' , title = "TOTAL 3PT AND 2PT JUMPSHOTS KOBE ATTEMPTED PER SEASON") +
+        theme(plot.title = element_text(size = 14 , face = 'bold') , axis.text.x = element_text(angle = 45)) + 
+        geom_text(size = 3 , position=position_stack(vjust=0.5))
+
+p1
+```
+
+It would be interesting if we could see how distance affects kobe's shooting percentage. We can use a scatterplot to present this in a nice graphical way.
+
+```{r}
+temp2 = train %>% filter(shot_distance < 40) %>%
+        group_by(shot_distance , shot_made_flag) %>%
+        summarise(count = n()) %>%
+        mutate(made_perc = round(count / sum(count) , 2)) %>%
+        filter(shot_made_flag == 1)
+p2    = ggplot(temp2 , aes(shot_distance , made_perc)) + 
+        geom_point(size = 3 , color = 'steelblue') +
+        geom_vline(xintercept = 23.75 , color = 'darkred') + 
+        annotate('text' , x = 26.5 , y = 0.55 , label = '3 point line' , color = 'darkred') + 
+        geom_smooth(method = 'loess') + 
+        labs(x = 'SHOT DISTANCE' , y = 'FIELD GOAL PERCENTAGE' , title = "KOBE'S FG % AT ANY GIVEN SHOT DISTANCE") +
+        theme(plot.title = element_text(size = 14 , face = 'bold') , axis.text.x = element_text(size = 12 , face = 'bold')) + 
+        theme(axis.text.y = element_text(size = 12 , face = 'bold') , axis.title.x = element_text(size = 12 , face = 'bold')) + 
+        theme(axis.title.y = element_text(size = 12 , face = 'bold')) + 
+        annotate('rect' , xmin = 8.5 , xmax = 21.5 , ymin = 0.38 , ymax = 0.47 , alpha = 0.15 , fill = 'green')
+
+p2
+```
+
+As we can see in the scatterplot in the **<span style = 'color:green'>green</span>** dataframe there are Kobe's shots between 9 and 21 ft. He made **40% - 45%** of these shots, giving his team an average **0.8 - 0.9 points per possession**. Statistically, a good NBA offense produce on average **1.0 point per position** so we can assume these shots are not the best offense option, and there were a lot of them...
+
+```{r}
+shots_between_9_21 = filter(train , shot_distance >= 9 , shot_distance <=21 , combined_shot_type == 'Jump Shot')
+dim(shots_between_9_21)[1]
+dim(shots_between_9_21)[1] / dim(train)[1]
+```
+
+A total of **11320** shots were attempted between 9 and 21 ft , **44%** of the total shots.  
+
+Of course a wide open mid-range shot for Kobe Bryant was always a good option but throughout his career he attempted a lot of tough shots with elite defenders on him. 
+
+
+Moving on, it would be interesting to see the shooting percentages from every Kobe's year
+
+```{r , fig.height = 10}
+## 2PT & 3PT BARPLOTS
+temp_2pt = train %>% filter(shot_type == '2PT') %>%
+        group_by(season , shot_made_flag) %>%
+        summarise(count = n()) %>%
+        mutate(perc = 100 * round(count / sum(count) , 3)) %>%
+        filter(shot_made_flag == 1)
+
+p_2pt = ggplot(temp_2pt , aes(season , perc)) + geom_bar(stat = 'identity' , fill = 'darkgreen') +
+        coord_cartesian(ylim = c(37 , 52)) + labs(title = '2PT FG% EVERY SEASON' , x = 'SEASON' , y = '2PT FG %') +
+        theme(axis.text.x = element_text(size = 11 , angle = 45 , hjust = 1) , axis.title.x = element_text(size = 12 , face = 'bold')) + 
+        theme(axis.text.y = element_text(size = 12) , axis.title.y = element_text(size = 12 , face = 'bold')) +
+        theme(plot.title = element_text(size = 14 , face = 'bold')) +
+        geom_hline(yintercept = mean(temp_2pt$perc) , color = 'blue' , size = 1.25 , alpha = 0.75) +
+        geom_label(aes(label = perc) , alpha = 0.6)
+       
+
+
+temp_3pt = train %>% filter(shot_type == '3PT') %>%
+        group_by(season , shot_made_flag) %>%
+        summarise(count = n()) %>%
+        mutate(perc = 100 * round(count / sum(count) , 3)) %>%
+        filter(shot_made_flag == 1)
+
+p_3pt = ggplot(temp_3pt , aes(season , perc)) + geom_bar(stat = 'identity' , fill = 'darkgreen') +
+        coord_cartesian(ylim = c(15 , 40)) + labs(title = '3PT FG% EVERY SEASON' , x = 'SEASON' , y = '3PT FG %') +
+        theme(axis.text.x = element_text(size = 11 , angle = 45 , hjust = 1) , axis.title.x = element_text(size = 12 , face = 'bold')) + 
+        theme(axis.text.y = element_text(size = 12) , axis.title.y = element_text(size = 12 , face = 'bold')) +
+        theme(plot.title = element_text(size = 14 , face = 'bold')) +
+        geom_hline(yintercept = mean(temp_3pt$perc) , color = 'blue' , size = 1.25 , alpha = 0.75) +
+        geom_label(aes(label = perc) , alpha = 0.6)
+
+grid.arrange(p_2pt , p_3pt , nrow = 2)
+```
+
+
+**<span style = 'color:blue'>Blue</span>** line defines Kobe's career average shooting percentage. 
+
+```{r}
+p3 = ggplot(train , aes(lon , lat )) + 
+        geom_point(aes(color = combined_shot_type) , alpha = 0.5 , size = 0.75) + 
+        ylim(c(33.7, 34.08)) + labs(x = 'LONGITUDE' , y = 'LATITUDE') +
+        theme(axis.text.x = element_text(size = 11 , angle = 45 , hjust = 1) , axis.title.x = element_text(size = 12 , face = 'bold')) + 
+        theme(axis.text.y = element_text(size = 12) , axis.title.y = element_text(size = 12 , face = 'bold')) +
+        theme(plot.title = element_text(size = 14 , face = 'bold'))
+
+p3
+```
+
+Now let's remove Jump Shot points 
+
+```{r}
+p4 = ggplot(train , aes(lon , lat )) + 
+        geom_point(data = filter(train , combined_shot_type != 'Jump Shot') , aes(color = combined_shot_type) , alpha = 0.5 , size = 2) + 
+        geom_point(data = filter(train , combined_shot_type == 'Jump Shot') , color = 'lightgrey' , size = 1.5 , alpha = 0.075) +
+        ylim(c(33.7, 34.08)) + labs(x = 'LONGITUDE' , y = 'LATITUDE') +
+        theme(axis.text.x = element_text(size = 11 , hjust = 1) , axis.title.x = element_text(size = 12 , face = 'bold')) + 
+        theme(axis.text.y = element_text(size = 12) , axis.title.y = element_text(size = 12 , face = 'bold')) +
+        theme(plot.title = element_text(size = 14 , face = 'bold'))
+
+p4
+
+```
+
+Most popular Kobe's Shot Type
+
+```{r}
+temp5 = train %>% group_by(action_type) %>% summarise(count = n()) %>% top_n(20) %>% arrange(desc(count))
+temp5
+```
+
+and FG's percentage of these Shots
+
+```{r}
+temp6 = train %>% filter(action_type %in% temp5$action_type) %>% group_by(action_type , shot_made_flag) %>%
+        summarise(count = n()) %>% mutate(perc = round(count / sum(count) , 2)) %>% filter(shot_made_flag == 1) %>%
+        arrange(desc(perc))
+
+p6 = ggplot(temp6 , aes(reorder(action_type , perc) , perc)) + geom_point(stat = 'identity' , color = 'darkgreen' , size = 3) + 
+        coord_flip() + ylim(c(0 , 1)) + labs(y = 'PERCENTAGE' , x = 'POPULAR SHOT TYPES') +
+        theme(axis.text.x = element_text(size = 11 , hjust = 1) , axis.title.x = element_text(size = 12 , face = 'bold')) + 
+        theme(axis.text.y = element_text(size = 12) , axis.title.y = element_text(size = 12 , face = 'bold')) +
+        theme(plot.title = element_text(size = 14 , face = 'bold'))
+
+p6
+```
+
+To be continued...
