@@ -1,0 +1,180 @@
+---
+title: "[Classification] Random Forest - Wine Quality"
+author: "IonasKel"
+date: "`r Sys.Date()`"
+output: 
+        html_document:
+                fig_width: 10
+                fig_height: 7
+                toc: yes
+                number_sections: yes
+                code_folding: show
+                highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE , message = FALSE , warning = FALSE)
+```
+
+
+# Load data and Libraries
+
+```{r , libraries}
+library(ggplot2)
+library(dplyr)
+library(randomForest)
+library(GGally)
+library(readr)
+library(corrplot)
+```
+
+```{r , load_data}
+wine = read_csv('D:/Desktop HDD/Datasets/winequality-data.csv')
+```
+
+
+# Exploratory Analysis
+
+```{r}
+glimpse(wine)
+summary(wine)
+
+# Drop id column
+wine = wine[ , -13]
+
+# Correlation between the variables (-Quality)
+corrplot(cor(wine[ , -12]) , method = 'number' , type = 'lower')
+```
+
+```{r}
+ggplot(wine , aes(x = quality , y = ..count..)) + geom_bar(aes(fill = ..count..)) + 
+        scale_fill_continuous(low = 'lightblue' , high = 'darkblue')
+```
+
+We will separate quality to three levels 
+
+* 3 to 5 -> Bad quality
+* 6 -> Average quality
+* 7 to 9 -> Good quality
+
+```{r}
+wine$quality2 = ifelse(wine$quality > 6 , 'Good quality' , ifelse(wine$quality < 6 , 'Bad quality' , 'Average quality'))
+
+wine$quality2 = as.factor(wine$quality2)
+
+ggplot(wine , aes(x = quality2 , y = ..count..)) + geom_bar(aes(fill = ..count..)) + 
+        scale_fill_continuous(low = 'lightblue' , high = 'darkblue')
+```
+
+
+
+# Random Forest
+
+Random Forests are one way to improve the performance of decision trees. The algorithm starts by building out trees similar to the way a normal decision tree algorithm works. 
+
+```{r}
+# Create train and test dataset
+library(caret)
+
+index = createDataPartition(wine$quality2 , p = 0.7 , list = FALSE)
+
+train = wine[index , -12]
+test = wine[-index , -12]
+rm(index)
+```
+
+```{r}
+set.seed(60)
+rfmodel = randomForest(quality2 ~ . , data = train , proximity = TRUE)
+rfmodel
+```
+
+We observe that 500 trees were built, and the model randomly sampled 3 predictors at each split. The OBB estimate of error rate of `r round(rfmodel$err.rate[500 , 1] * 100 , 2)[[1]]`% means that **`r (100 - round(rfmodel$err.rate[500 , 1] * 100 , 2)[[1]])`%** of the Out-Of-Bag samples were classified correctly by the Random Forest.
+
+We can compute the accuracy of the Random Forest with the *Sum of the diagonal of the confusion matrix divided by the Sum of all the matrix elements*.
+
+```{r}
+cat('The accuracy rate for the train dataset is:' , 
+    sum(diag(rfmodel$confusion[ , -4])) / sum(rfmodel$confusion[ , -4]))
+
+```
+
+
+In order to plot the errors of the rfmodel$err.rate ...
+
+```{r}
+library(DT)
+DT::datatable(data.frame(rfmodel$err.rate) , options = list(pageLength = 5))
+
+```
+
+
+... we need to transform the dataframe to look like this ... 
+
+```{r}
+library(tidyr)
+df.err.rates = gather(data.frame(rfmodel$err.rate) , 'type.of.error' , 'value.of.error' , 1:4)
+df.err.rates$trees = rep(1:nrow(rfmodel$err.rate) , times = 4)
+
+str(df.err.rates)
+```
+
+```{r}
+ggplot(df.err.rates , aes(x = trees , y = value.of.error , color = type.of.error)) + geom_line() +
+        labs(x = 'Number of trees' , y = 'Error Rates')
+
+```
+
+The error rates nearly stabilize after 200 trees. That indicates 500 trees are sufficient.
+
+Now we want to check whether the decision of our model randomly sample 3 predictors at each split is the one that minimises Out Of Bag Error.
+
+```{r}
+oob.err = vector(length = 11)
+for(i in 1:length(oob.err)) {
+        rfmodel2 = randomForest(quality2 ~ . , train , mtry = i , ntree = 500)
+        oob.err[i] = rfmodel2$err.rate[nrow(rfmodel2$err.rate) , 1]
+}
+rm(i , rfmodel2)
+
+qplot(y = oob.err , x = 1:length(oob.err) , geom = 'line') + labs(x = 'mtry value' , y = 'OOB Error Rate')
+
+```
+
+We want to use the Random Forest to draw an MDS(Multidimensional Scaling) plot with samples. This will show us how they related to each other.
+
+```{r}
+dist.mat = dist(1 - rfmodel$proximity)
+mds.cmd.scale = cmdscale(dist.mat , eig = TRUE , x.ret = TRUE)
+mds.var = round(mds.cmd.scale$eig / sum(mds.cmd.scale$eig) * 100 , 1)
+
+# MDS dataframe
+mds.data = data.frame(Samples = row.names(mds.cmd.scale$points) , 
+                      x_points = mds.cmd.scale$points[ , 1] , 
+                      y_points = mds.cmd.scale$points[ , 2] , 
+                      qual = train$quality2)
+
+# MDS plot
+ggplot(mds.data , aes(x = x_points , y = y_points)) +
+        geom_point(aes(color = qual) , alpha = 0.4) +
+        xlab(paste('MDS1 - ' , mds.var[1] , '%' , sep = '')) + 
+        ylab(paste('MSD2 - ' , mds.var[2] , '%' , sep = '')) + 
+        ggtitle('MDS Plot')
+
+```
+
+
+Now let's test how the the model perform on the test data set.
+
+```{r}
+pred = predict(rfmodel , newdata = test)
+
+# Accuracy metrics with confusion matrix from caret library
+confusionMatrix(pred , test$quality2)
+
+```
+
+
+
+
+
