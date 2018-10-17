@@ -1,0 +1,396 @@
+---
+title: "Housing Market [FE & EDA]"
+author: "IonasKel"
+date: "October 7, 2018"
+output: 
+        html_document:
+                fig_height: 8
+                fig_width: 12
+                highlight: tango
+                toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE , warning = FALSE , message = FALSE)
+```
+
+
+# Introduction
+
+We have disposable a large dataset of houses and a lot of their characteristics. Because of the large amount of variables there are available, this dataset is perfect for an extensive Exploratory Data Analysis.
+
+# Load data and Libraries
+
+```{r load libraries}
+# R Packages we need
+library(tidyverse)
+library(ggthemes)
+library(corrplot)
+library(GGally)
+library(Amelia)
+library(gridExtra)
+```
+
+```{r load data}
+# Dataset with 30471 rows and 292 columns
+train = read_csv('D:/Desktop HDD/Datasets/Housing/train.csv')
+
+# Dataset with 7662 rows and 291 columns
+test = read_csv('D:/Desktop HDD/Datasets/Housing/test.csv')
+```
+
+
+# Data Cleaning and Feature Selection
+
+This is a very large dataset with 292 variables. So in order to make the exploratory data analysis simpler i am going to select the more important features. Creating new features will be very useful for both the exploratory and prediction part of my analysis. These are the selected variables:
+
+
+```{r features selection}
+# Columns selection
+houses_train = train %>%
+        select(price_doc , timestamp , full_sq , life_sq , kitch_sq , floor , max_floor , material , build_year ,
+               num_room , state , product_type , sub_area , area_m , raion_popul , park_km , metro_km_walk , 
+               stadium_km , work_all , railroad_km , school_km , big_market_raion)
+
+houses_test = test %>%
+        select(timestamp , full_sq , life_sq , kitch_sq , floor , max_floor , material , build_year ,
+               num_room , state , product_type , sub_area , area_m , raion_popul , park_km , metro_km_walk , 
+               stadium_km , work_all , railroad_km , school_km , big_market_raion)
+
+colnames(houses_train)
+
+```
+
+where
+
+* **price_doc** : Sale Price
+* **timestamp** : Date of transaction
+* **full_sq** : Total area in square meters
+* **life_sq** : Living room area in square meters
+* **kitch_sq** : Kitchen area in square in meters
+* **floor** : Floor of the building (for apartments)
+* **max_floor** : Number of floors in the building
+* **material** : Wall material (Levels 1 through 6)
+* **build_year** : Year built
+* **num_room** : Number of living rooms
+* **state** : Apartment condition (Levels 1 through 4)
+* **product_type** : owner-occupier purchase or investment
+* **sub_area** : name of district
+* **area_m** : Area in square meters
+* **raion_popul** : Number of municipality population
+* **park_km** : Distance to park
+* **metro_km_walk** : Distance to metro, km
+* **stadium_km** : Distance to a stadium
+* **work_all** : Working-age population
+* **railroad_km** : Distance to railroad
+* **school_km** : Distance to high-school
+* **big_market_raion** : Presence of large grocery & wholesale markets ('yes' or 'no')
+
+There is a row where *state* is 33 so we assume it meant to be condition 3.
+
+```{r data cleaning 1}
+table(houses_train$state)
+houses_train$state[houses_train$state == '33'] = '3'
+```
+
+There is a very big build year number date.
+
+```{r data cleaning 2}
+houses_train %>% filter(as.numeric(build_year) > 1.5e+07) %>% select(timestamp , build_year)
+
+# We replace 20052009 value with 2007
+houses_train$build_year[houses_train$build_year == '20052009'] = '2007'
+```
+
+
+Let's see what is the percentage of missing values for every variable. I 'll create a function to make this action reproducible.
+
+```{r column_nas}
+# Plot the NA's percentage of every variable. Library ggplot2 & ggthemes needed.
+column_nas = function(dataframe) {
+        
+        na_vals = sapply(dataframe , function(x) mean(is.na(x)))
+        
+        nas = data.frame(column_names = names(na_vals) , na_percentage = as.vector(na_vals))
+        
+        ggplot(nas , aes(x = reorder(column_names , na_percentage) , y = na_percentage , label = paste(as.character(round(na_percentage * 100 , 1)) , "%"))) +
+                geom_col(fill = "lightblue") + xlab('Names of columns') + ylab("NA's Percentage") +
+                labs(title = "Column NA's Percentage") + geom_text(color = 'darkblue') + theme_igray() + coord_flip()
+}
+
+column_nas(houses_train)
+
+```
+
+One can assume the 4 variables with 31.4% of their values are missing, contain these values in the same rows. We can check this with the *missmap* function from the package Amelia.
+
+```{r missmap}
+missmap(houses_train , col = c('darkred' , 'lightblue') , y.cex = 0.1)
+```
+
+
+# Feature Engineering
+
+For easier exploratory analysis we can separate the timestamp variable into **'year'**, **'month'** and **'day'** columns.
+
+```{r separate timestamp}
+str(houses_train$timestamp)
+
+houses_train = houses_train %>%
+        separate(col = timestamp , into = c('year' , 'month' , 'day') , sep = '-')
+
+# Convert these variables to numeric
+houses_train$year = as.integer(houses_train$year)
+houses_train$month = as.integer(houses_train$month)
+houses_train$day = as.integer(houses_train$day)
+
+head(houses_train[ , 1:5] , 5)
+
+```
+
+
+```{r separate timestamp on test set , echo = FALSE}
+houses_test = houses_test %>%
+        separate(col = timestamp , into = c('year' , 'month' , 'day') , sep = '-')
+
+# Convert these variables to numeric
+houses_test$year = as.integer(houses_test$year)
+houses_test$month = as.integer(houses_test$month)
+houses_test$day = as.integer(houses_test$day)
+
+```
+
+
+Except from the fact that the *build_year* feature has a big percentage of missing values, it seems to be more problematic as there are inexpicable year values. I 'll set these values to missing.
+
+```{r build_year plot}
+qplot(x = 1:dim(houses_train)[1] , y = houses_train$build_year) + geom_point(color = 'blue' , shape = 5 , size = 1.5) + ylim(c(0 , 5000)) + labs(x = 'Index' , y = 'Built year')
+
+# Any value do not belong in (1600 , 2018] interval -> NA
+houses_train$build_year = as.numeric(houses_train$build_year)
+houses_train[(houses_train$build_year > 2018 | houses_train$build_year <= 1800) & !is.na(houses_train$build_year)  , 'build_year'] = NA
+
+```
+
+
+We also need to remove a row of a house with over 5000 of square meters which obviously is an outlier.
+```{r full_sq outlier , echo = FALSE}
+houses_train = houses_train %>% filter(full_sq < 4000)
+```
+
+Let's try to fing outliers in the price_doc variable. A quick modelling and Cook's distance will help us identify them. Cook's distance is a measure computed with respect to a given regression model and therefore is impacted only by the X variables included in the model. It computes the influence exerted by each data point (row) on the predicted outcome. 
+
+```{r price_doc outliers}
+# Modelling price with full square meters as the independent variable
+mod = lm(price_doc ~ full_sq , houses_train)
+cookd = cooks.distance(mod)
+
+qplot(x = 1:length(cookd) , y = cookd) + 
+        geom_hline(yintercept = quantile(cookd , probs = 0.99) , color = 'darkred' , size = 1) + ylim(c(0 , 0.01)) + 
+        labs(x = '' , y = 'Cooks Distance' , title = "Cook's Distance for   Price = a + b*(Square Meters)   Linear model") + 
+        annotate('text' , x = 9500 , y = 0.008 , label = "Red line defines the 99th percentile of Cook's distance" , color = 'darkred' , size = 4.5)
+
+# Remove rows where Cook's distance exceeds the 99th percentile
+houses_train  = houses_train %>%
+        filter(cookd < quantile(cookd , probs = 0.99))
+
+```
+
+Given 3 variables which measures square meters for different house surfaces we know that living room and kitchen surfaces are just a subset of the total house. Therefore, we can create 2 new variables **life_to_full** and **kitch_to_full** ranging from 0 to 1.
+
+```{r ratio variables train}
+houses_train$full_sq = as.numeric(houses_train$full_sq)
+houses_train$life_sq = as.numeric(houses_train$life_sq)
+houses_train$kitch_sq = as.numeric(houses_train$kitch_sq)
+
+houses_train = houses_train %>%
+        mutate(life_to_full = life_sq / full_sq , 
+               kitch_to_full = kitch_sq / full_sq)
+
+head(houses_train %>% select(full_sq , life_sq , kitch_sq , life_to_full , kitch_to_full) %>% drop_na() , 5)
+```
+
+```{r ratio variables test , echo = FALSE}
+houses_test$full_sq = as.numeric(houses_test$full_sq)
+houses_test$life_sq = as.numeric(houses_test$life_sq)
+houses_test$kitch_sq = as.numeric(houses_test$kitch_sq)
+
+houses_test = houses_test %>%
+        mutate(life_to_full = life_sq / full_sq , 
+               kitch_to_full = kitch_sq / full_sq)
+```
+
+But are there rows where these new variables exceed 1?
+
+
+```{r ratios exceeding 1}
+# For living room
+dim(houses_train %>% filter(life_to_full > 1))[1]
+
+# For kitchen
+dim(houses_train %>% filter(kitch_to_full > 1))[1]
+
+# Set these rows to NA
+index_life = houses_train$life_to_full > 1
+index_kitch = houses_train$kitch_to_full > 1
+
+houses_train$kitch_sq[index_kitch & !is.na(houses_train$kitch_sq)] = NA
+houses_train$kitch_to_full[index_kitch & !is.na(houses_train$kitch_to_full)] = NA
+
+houses_train$life_sq[index_life & !is.na(houses_train$life_sq)] = NA
+houses_train$life_to_full[index_life & !is.na(houses_train$life_to_full)] = NA
+
+```
+
+```{r , echo = FALSE}
+rm(index_kitch , index_life , mod , cookd)
+```
+
+
+# Exploratory Data Analysis
+
+First let's see the effect of time on house prices.
+
+```{r plot 1}
+gather(select(houses_train , build_year , year , price_doc) , key = 'built.or.bought' , value = 'year' , 1:2) %>%            drop_na() %>% ggplot(aes(x = year , y = price_doc , color = built.or.bought)) + 
+        geom_point(alpha = 0.5 , size = 2) + 
+        scale_color_manual(values = c('lightblue' , 'darkgrey') , name = '' , breaks = c('build_year' , 'year') , labels = c('Year Built' , 'Year Bought')) + 
+        theme_economist_white() + xlim(c(1900 , 2018)) + labs(x = '' , y = 'Price sold')
+
+```
+
+All of the transactions took place betwwen 2011 and 2015 as shown in the <span style="color:darkgrey">grey</span> data points. According there are a lot of houses that have been sold before even built. 
+```{r build bigger year}
+paste('There have been bought' , dim(houses_train %>% filter(build_year > year))[1] , 'houses before even built' , sep = ' ')
+```
+
+One of the most important predictors for real estate pricing is the size of the property. 
+
+```{r plot 2}
+ggplot(houses_train[sample(dim(houses_train)[1] , 5000) , ] , aes(x = full_sq , y = price_doc)) + 
+        geom_point(alpha = 0.5 , size = 2 , color = 'lightblue') + xlim(c(0 , 200)) + ylim(c(0 , 4e+07)) +
+        geom_smooth(se = FALSE , method = 'lm') + labs(x = 'Area Surface (sq meters)' , y = 'Price') + 
+        geom_rug(alpha = 0.5 , color = 'darkblue')
+
+```
+
+What about the correlations between numerical variables.
+
+```{r correlations}
+numerical_vars = houses_train %>% select(price_doc , full_sq , life_sq , kitch_sq , life_to_full , kitch_to_full , build_year , num_room , state , area_m , raion_popul)
+
+numerical_vars$state = as.numeric(numerical_vars$state)
+numerical_vars$price_doc = as.numeric(numerical_vars$price_doc)
+numerical_vars$num_room = as.numeric(numerical_vars$num_room)
+numerical_vars$raion_popul = as.numeric(numerical_vars$raion_popul)
+
+corrplot(cor(numerical_vars %>% drop_na()) , method = 'number' , type = 'lower')
+
+```
+
+```{r , echo = FALSE}
+rm(numerical_vars)
+```
+
+State variable defines the apartment condition with levels 1 to 4.
+```{r state plot 3}
+houses_train %>% filter(!is.na(state)) %>%
+        group_by(state) %>%
+        summarise(perc_10th = quantile(price_doc , probs = 0.1) , 
+                  median = median(price_doc) , 
+                  mean = mean(price_doc) , 
+                  perc_90th = quantile(price_doc , probs = 0.9))
+
+# Boxplot
+ggplot(houses_train[!is.na(houses_train$state) , ] , aes(x = state , y = price_doc , fill = state)) + 
+        geom_boxplot() + ylim(c(0 , 2e+07)) + geom_jitter(alpha = 0.2 , aes(color = state)) + 
+        labs(y = 'Price' , x = 'House Condition' , title = 'Price by House Condition') + 
+        theme(legend.position = 'none')
+
+```
+
+It does appear that state 4 has the highest sale price on average but there are fewer home full under this condition.
+
+But what about the kitchen and living room ratio to full square meters and the impact they have on price?
+
+```{r plot 4}
+gather(select(houses_train , price_doc , life_to_full , kitch_to_full) , key = 'life.or.kitch' , 
+       value = 'ratio.to.full' , 2:3) %>%
+        ggplot(aes(x = ratio.to.full , y = log(price_doc))) + geom_point(alpha = 0.2 , aes(color = life.or.kitch)) + 
+        facet_grid(~life.or.kitch) + ylim(c(12 , 19)) + theme(legend.position = 'none') + 
+        labs(x = 'Ratio' , title = 'Kitchen and Living room Ratio to total house square meters') +
+        geom_smooth(method = 'gam' , color = 'black' , size = 0.5 , se = FALSE)
+```
+
+
+The product type feature contains of two levels, Investment and Owner Occupier.
+
+```{r plot 5}
+ggplot(houses_train , aes(price_doc , fill = product_type)) + geom_density(alpha = 0.5) +
+        xlim(c(0 , 3e+07)) + scale_fill_manual(values = c('darkgreen' , 'darkblue'))
+
+```
+
+```{r plot 6}
+houses_train %>% group_by(build_year , product_type) %>%
+        summarise(sales = n()) %>% drop_na() %>%
+        ggplot(aes(x = build_year , y = sales , fill = product_type)) + geom_area(alpha = 0.65) + 
+        scale_fill_manual(values = c('darkgreen' , 'darkblue')) + xlim(c(1950 , 2018))
+        labs(x = 'Year Built' , y = 'Number of Sales' , title = 'Number of houses built per year')
+
+```
+
+Number of houses sold grouped by area.
+
+```{r plot 7}
+houses_train %>% group_by(sub_area) %>% summarise(count_n = n()) %>% arrange(desc(count_n)) %>% top_n(15) %>%
+        ggplot(aes(x = reorder(sub_area , count_n) , y = count_n , fill = count_n)) + 
+        geom_col(alpha = 0.75) + labs(x = 'Area' , y = 'Number of transactions' , title = 'Top 15 Areas by total count of transactions') + coord_flip() +
+        theme(legend.position = 'none' , axis.text.x = element_text(size = 12) , axis.text.y = element_text(size = 12))  
+        
+
+```
+
+```{r plot 8}
+houses_train %>% group_by(sub_area) %>% summarise(median_price = median(price_doc)) %>% 
+        arrange(desc(median_price)) %>% top_n(15) %>%
+        ggplot(aes(x = reorder(sub_area , median_price) , y = median_price , fill = median_price)) +
+        geom_col() + labs(y = 'Median Price of transactions' , x = 'Area' , title = 'Top 15 Areas by median price of transactions') + theme(legend.position = 'none' , axis.text.x = element_text(size = 12) , axis.text.y = element_text(size = 12)) + scale_fill_gradient(low = 'darkgreen' , high = 'lightgreen') + coord_flip()
+
+```
+
+Does the presence of large grocery & wholesale markets in the area have an impact on the price?
+
+```{r plot9}
+p1 = with(houses_train , qplot(y = price_doc , x = big_market_raion , fill = big_market_raion , alpha = 0.6 , geom = 'boxplot')) +
+        ylim(c(0 , 1.5e+07)) + scale_fill_manual(values = c('darkgreen' , 'darkblue')) + 
+        geom_jitter(alpha = 0.1 , color = 'slategray4') + theme(legend.position = 'none') +
+        theme(axis.text = element_text(size = 12 , face = 'bold')) + 
+        labs(x = 'Big Market Area' , y = 'Price' , title = 'Presence of big market and house prices')
+
+p2 = with(houses_train , qplot(price_doc , fill = big_market_raion , geom = 'density' , alpha = 0.6)) + xlim(c(0 , 1.5e+07)) + scale_fill_manual(values = c('darkgreen' , 'darkblue')) + labs(x = 'Price' , title = '' , fill = 'Big Market' , alpha = '') + theme(axis.text = element_text(size = 11))
+
+grid.arrange(p1 , p2 , nrow =2)
+
+```
+
+It seems there is not significant difference on price for this type of area discrimination.
+
+```{r , echo = FALSE}
+rm(p1 , p2)
+```
+
+```{r plot 10}
+ggplot(houses_train[!is.na(houses_train$max_floor) , ] , aes(x = reorder(max_floor , as.numeric(max_floor)) , y = price_doc  , fill = reorder(max_floor , as.numeric(max_floor)))) + geom_boxplot() + theme(legend.position = 'none') + coord_cartesian(ylim = c(0 , 3e+07)) + labs(x = 'Number of floors in the Building' , y = 'Price' , title = 'Number of floors and Price')
+
+```
+
+
+
+
+
+
+
+
+
+
